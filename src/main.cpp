@@ -16,7 +16,8 @@ using namespace std;
 using json = nlohmann::json;
 
 const double MAX_SPEED = 49.5;
-const double MAX_ACC = 0.224;
+const double MAX_ACC = 0.5*0.224;
+const double LANE_CLEARANCE = 30.0;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -76,7 +77,7 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 	double heading = atan2((map_y-y),(map_x-x));
 
 	double angle = fabs(theta-heading);
-  angle = min(2*pi() - angle, angle);
+  	angle = min(2*pi() - angle, angle);
 
   if(angle > pi()/4)
   {
@@ -278,7 +279,7 @@ int main() {
               car_s = end_path_s;
             }
           
-          	// Calculate other cars positions
+          	// ***1. Calculate other cars positions relative to our car***
           	bool car_ahead = false;
           	bool car_left = false;
           	bool car_right = false;
@@ -298,19 +299,19 @@ int main() {
               
               	if (!car_ahead && car_lane == lane) {
                   	// car in same lane
-                	car_ahead = (other_car_s > car_s) && (other_car_s - car_s < 30);
+                	car_ahead = (other_car_s > car_s) && (other_car_s - car_s < LANE_CLEARANCE);
                 }
               	else if (!car_left && car_lane - lane == -1)  {
                   	// car in left lane
-                 	car_left = (car_s - 30 < other_car_s) && (car_s + 30 > other_car_s); 
+                 	car_left = (car_s - 2.0*LANE_CLEARANCE < other_car_s) && (car_s + LANE_CLEARANCE > other_car_s); 
                 }
               	else if (!car_right && car_lane - lane == 1) {
                   	// car in right lane
-                  	car_right = (car_s - 30 < other_car_s) && (car_s + 30 > other_car_s);
+                  	car_right = (car_s -2.0* LANE_CLEARANCE < other_car_s) && (car_s + LANE_CLEARANCE > other_car_s);
                 }
             }
           
-          	// Based on the state of the other cars, decide what to do
+          	// ***2. Based on the relative positions of the other cars, decide what to do***
           	double speed_diff = 0.0;
           	if (car_ahead) {
              	if (lane > 0 && !car_left) {
@@ -343,6 +344,7 @@ int main() {
               }
             }
           
+          	// ***3. Create list of waypoints for the car to follow
           	// Create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
           	// Later we will interoplate these waypoints with a spline and fill it in with more points that control speed.
           	vector<double> ptsx;
