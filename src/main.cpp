@@ -16,8 +16,10 @@ using namespace std;
 using json = nlohmann::json;
 
 const double MAX_SPEED = 49.5;
-const double MAX_ACC = 0.5*0.224;
+const double MAX_ACC = 0.224;
 const double LANE_CLEARANCE = 30.0;
+const double MIN_LANE_CHANGING_SPEED = 30.0;
+const double MIN_PASSING_AHEAD_DIST = 10.0;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -172,15 +174,15 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 }
 
 int get_lane(int d) {
-  if (d > 0 && d < 4) {
+  if (d >= 0 && d < 4) {
     return 0;
   }
   
-  if (d > 4 && d < 8) {
+  if (d >= 4 && d < 8) {
    	return 1; 
   }
   
-  if (d > 8 && d < 12) {
+  if (d >= 8 && d < 12) {
    	return 2; 
   }
   
@@ -231,11 +233,13 @@ int main() {
   }
   
   int lane = 1;  // start in lane 1
-  
   double ref_vel = 0.0; // mph
+	bool prior_car_ahead = false;
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                     uWS::OpCode opCode) {
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
+								&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel, 
+								&prior_car_ahead]
+								(uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -281,8 +285,13 @@ int main() {
           
           	// ***1. Calculate other cars positions relative to our car***
           	bool car_ahead = false;
+						bool car_far_left = false;
           	bool car_left = false;
           	bool car_right = false;
+						bool car_far_right = false;
+						bool car_ahead_left = false;
+						bool car_ahead_right = false;
+						double car_ahead_dist = 0.0;
           
           	for (int i=0; i<sensor_fusion.size(); i++) {
              	float d = sensor_fusion[i][6]; 
@@ -299,45 +308,106 @@ int main() {
               
               	if (!car_ahead && car_lane == lane) {
                   	// car in same lane
-                	car_ahead = (other_car_s > car_s) && (other_car_s - car_s < LANE_CLEARANCE);
+									prior_car_ahead = car_ahead;
+									if (other_car_s - car_s > 0.0) {
+										car_ahead_dist = other_car_s - car_s;
+									}
+                	car_ahead = (other_car_s >= car_s) && (other_car_s - car_s < LANE_CLEARANCE);
+                }
+              	else if (!car_far_left && car_lane - lane == -2)  {
+                  	// car in left lane
+                 	car_far_left = (car_s - LANE_CLEARANCE <= other_car_s) && (car_s + LANE_CLEARANCE > other_car_s); 
                 }
               	else if (!car_left && car_lane - lane == -1)  {
                   	// car in left lane
-                 	car_left = (car_s - 2.0*LANE_CLEARANCE < other_car_s) && (car_s + LANE_CLEARANCE > other_car_s); 
+                 	car_left = (car_s - LANE_CLEARANCE <= other_car_s) && (car_s + LANE_CLEARANCE > other_car_s); 
+
+									car_ahead_left = (other_car_s >= car_s) && (car_s + 2.0*LANE_CLEARANCE > other_car_s); 
                 }
               	else if (!car_right && car_lane - lane == 1) {
                   	// car in right lane
-                  	car_right = (car_s -2.0* LANE_CLEARANCE < other_car_s) && (car_s + LANE_CLEARANCE > other_car_s);
+                  car_right = (car_s - LANE_CLEARANCE <= other_car_s) && (car_s + LANE_CLEARANCE > other_car_s);
+
+									car_ahead_right = (other_car_s >= car_s) && (car_s + 2.0*LANE_CLEARANCE > other_car_s); 
+                }
+              	else if (!car_far_right && car_lane - lane == 2) {
+                  	// car in right lane
+                  car_far_right = (car_s - LANE_CLEARANCE <= other_car_s) && (car_s + LANE_CLEARANCE > other_car_s);
                 }
             }
+						cout << "###lane: " << lane << endl;
+						cout << "###car_ahead: " << car_ahead << endl;
+						cout << "###car_ahead_dist: " << car_ahead_dist << endl;
+						cout << "###car_far_left: " << car_far_left << endl;
+						cout << "###car_left: " << car_left << endl;
+						cout << "###car_right: " << car_right << endl;
+						cout << "###car_far_right: " << car_far_right << endl;
+						cout << "###car_ahead_left: " << car_ahead_left << endl;
+						cout << "###car_ahead_right: " << car_ahead_right	 << endl;
           
-          	// ***2. Based on the relative positions of the other cars, decide what to do***
+          	// ***2. Based on the relative positions of the other cars, decide what the car should do***
           	double speed_diff = 0.0;
           	if (car_ahead) {
-             	if (lane > 0 && !car_left) {
-                  	// switch to the left lane if there is an left lane
-                  	// and there isn't a car in that lane
+							cout << "###ref_vel: " << ref_vel << endl;
+							if (ref_vel > MIN_LANE_CHANGING_SPEED && car_ahead_dist >= MIN_PASSING_AHEAD_DIST) {
+								// only switch lanes if the car is going fast enough and it hasn't just switched lanes
+								if (lane == 1 && !car_far_left && !car_left && !car_right && !car_far_right) {
+									// we can either switch into the left or right lane
+									if (!car_ahead_left && car_ahead_right) {
+										lane--; 
+									} else {
+										lane++; 							
+									}
+								} 
+             		else if (lane > 0 && !car_far_left && !car_left) {
+                  // Switch to the left lane if there is an left lane
+                  // and there isn't a car in that lane. Also make sure 
+									// that isn't a car in lane left the lane that you are
+									// trying to switch into in case that car tries to 
+									// switch into the same lane.
                  	lane--; 
                 }
-              	else if (lane < 2 && !car_right) {
-                 	// switch to the right lane if there is a right lane
-                  	// and there isn't a car in that lane
-                  	lane++;
+              	else if (lane < 2 && !car_right && !car_far_right) {
+                 	// Switch to the right lane if there is a right lane
+                  // and there isn't a car in that lane. Also make sure 
+									// that isn't a car in lane right the lane that you are
+									// trying to switch into in case that car tries to 
+									// switch into the same lane.
+                  lane++;
                 }
-              	else {
-                  	// can't switch lanes so just slow down
-                 	speed_diff -= MAX_ACC; 
-                }
+								else {
+									if (car_ahead && (!prior_car_ahead || car_ahead_dist <= 10.0)) {
+										// If car aggressively switched lanes in front of our car 
+										// or our car is too close the car in front of us,
+										// try to slow down with the max acceleration
+										speed_diff -= MAX_ACC; 
+									}
+									else if (ref_vel < MAX_SPEED/2.0) {
+										// If the velocity is less than half, don't slow down so much.
+										// This is to try to avoid coming to a complete stop on the highway.
+                		speed_diff -= MAX_ACC/2.0; 
+									} else {
+										speed_diff -= MAX_ACC; 
+									}
+              	}
+							}
+              else {
+								if (car_ahead && (!prior_car_ahead || car_ahead_dist <= 10.0)) {
+									// If car aggressively switched lanes in front of our car 
+									// or our car is too close the car in front of us,
+									// try to slow down with the max acceleration
+									// A car just aggressively switched lanes in front of our car.
+									// Try to slow down with the max acceleration
+									speed_diff -= MAX_ACC; 
+								}
+									else if (ref_vel < MAX_SPEED/2.0) {
+                	speed_diff -= MAX_ACC/2.0; 
+								} else {
+									speed_diff -= MAX_ACC; 
+								}
+              }
             }
           	else {
-              // no car ahead
-              if (lane != 1) {
-              	// the car isn't in the center lane
-                if ((lane == 0 && !car_right) && (lane == 2 && !car_left)) {
-                  // the center lane is clear so switch into it
-               	  lane = 1;
-                } 
-              }
               if (ref_vel < MAX_SPEED) {
                 // if not at max speed, accelerate to get back to max speed
               	speed_diff += MAX_ACC;
@@ -360,38 +430,38 @@ int main() {
           	if (prev_size < 2)
             {
             	double prev_car_x = car_x - cos(car_yaw);
-              	double prev_car_y = car_y - sin(car_yaw);
+              double prev_car_y = car_y - sin(car_yaw);
               
-              	ptsx.push_back(prev_car_x);
-              	ptsx.push_back(car_x);
+              ptsx.push_back(prev_car_x);
+              ptsx.push_back(car_x);
               
-              	ptsy.push_back(prev_car_y);
-              	ptsy.push_back(car_y);
+              ptsy.push_back(prev_car_y);
+              ptsy.push_back(car_y);
             }
           	// use the previous path's end point as starting reference 
-          	else 
-            {
-              	// Redefine reference state as previous path end point
-            	ref_x = previous_path_x[prev_size-1];
-              	ref_y = previous_path_y[prev_size-1];
-              
-              	double ref_x_prev = previous_path_x[prev_size-2];
-              	double ref_y_prev = previous_path_y[prev_size-2];
-              	ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
-              
-              	// Use two points tht make the path tangent to the previous path's end points
-              	ptsx.push_back(ref_x_prev);
-              	ptsx.push_back(ref_x);
-              
-              	ptsy.push_back(ref_y_prev);
-              	ptsy.push_back(ref_y); 
-            }
-          
-          	// In Frenet aadd evenly 30m spaced points ahead of the starting reference
+          	else
+						{
+							// Redefine reference state as previous path end point
+							ref_x = previous_path_x[prev_size - 1];
+							ref_y = previous_path_y[prev_size - 1];
+
+							double ref_x_prev = previous_path_x[prev_size - 2];
+							double ref_y_prev = previous_path_y[prev_size - 2];
+							ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
+
+							// Use two points tht make the path tangent to the previous path's end points
+							ptsx.push_back(ref_x_prev);
+							ptsx.push_back(ref_x);
+
+							ptsy.push_back(ref_y_prev);
+							ptsy.push_back(ref_y);
+						}
+
+						// In Frenet aadd evenly 30m spaced points ahead of the starting reference
           	double d = (2+4*lane);
           	vector<double> next_wp0 = getXY(car_s+30, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
           	vector<double> next_wp1 = getXY(car_s+60, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-         	vector<double> next_wp2 = getXY(car_s+90, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
+         		vector<double> next_wp2 = getXY(car_s+90, d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
           
           	ptsx.push_back(next_wp0[0]);
           	ptsx.push_back(next_wp1[0]);
